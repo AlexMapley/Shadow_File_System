@@ -1,25 +1,10 @@
-# Shadow_File_System
+McGill, Comp 310 Final Project
 
-Evaluation Grid: ( 0 / 100 )
+Makign a shadow file system based on linux POSIX Standards.
 
-File System compiling and files created, 
-some data writes working, reads working ( 0 / 50 )
+Key Design Attributes:
+1. Main Directory, no subdirectories
+2. Ability to take directory screenshots as shadow roots
+3. Ability to restore system to previously saved screenshot
 
-Reads and Writes working with seeking ( 0 / 10 )
-
-Commit and Restore working ( 0 / 30 )
-
-Memory Leak Problems	( 0 / 5 )
-
-Code Quality and General Documentation ( 0 / 5 )
-
-
-
-
-
-
-
-Work Progress ( 1 / 17)
-
-(March 25th, Day 1): 1 line, 0 %
 
