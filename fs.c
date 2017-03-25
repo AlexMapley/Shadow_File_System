@@ -1,27 +1,107 @@
-#include <stdin.h>
+#include <stdio.h>
+
+
+
+#define blocksize 1024;
+
+
+
+
+/********************************************************************************************************************/
+/* STRUCTURES IN SYSTEM
+Designates the information and design
+principles needed for each component in our
+shadow file system. At the very least,
+this can be used as a reference to 
+malloc'd size */
+
+/*************************/
+//SuperBlock
+struct superblock {
+	
+	int fsSize;
+	int nbInodes;
+	//jnode currentRoot;
+	//jnode *shadowroots[];
+	
+
+} superblock;
+
+
+
+//File
+struct file {
+
+	char data[4096];
+	
+} file;
+
+
+
+
+/*************************/
+//Inode
+ struct inode {
+
+	int size;
+	int rdPtr;
+	int wrPtr;
+
+} inode;
 
 
 
 
 
+/*************************/
+//Jnode
+ struct jnode {
+
+	//inode *ptrs [];
+
+        
+} jnode;
+
+
+/*************************/
+//Free Bit Map (FBM)
+struct FBM {
+	
+	/* Each Char is 1 byte, so we have 
+	we can keep track of here 8*1024 = 8192 blocks.
+	We're gonna have to perform some modular arithmetic on each
+	char in our block in order to find free spaces.
+	I actually don't think that this will be that costly a cpu 
+	function to compute for each file creation, probably still much
+	less than the io required for creating the actual file */
+
+	char map[1024];
+} FBM;
+
+
+
+/*************************/
+//Write Mask (WM)
+struct WM {
+
+
+
+} WM;
 
 
 /********************************************************************************************************************/
 //Creates File System
 void mkssfs(int fresh) {
 
-//To do:
+	//1. Setup Super Block (jnode)
 
-//1. Setup Super Block
+	//2. Setup Free Bit Map (1 block)
 
-//2. Setup Free Bit Map (1 block)
+	//3. Setup the Write Mask (1 block)
 
-//3. Setup the Write Mask (1 block)
+	//4. Initialize file containing all i-nodes
 
-//4. Initialize file containing all i-nodes
-
-//5. Setup root directory (read only)
-
+	//5. Setup root directory (read only)
 
 
 }
