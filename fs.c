@@ -1,8 +1,15 @@
 #include <stdio.h>
+#include <stdlib.h> 
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include "disk_emu.h"
 
 
 
-#define blocksize 1024;
+#define BLOCK_SIZE 1024;
+#define MAX_BLOCK 1024;
+#define DISK_NAME "MapleDisk"
 
 
 
@@ -15,22 +22,10 @@ shadow file system. At the very least,
 this can be used as a reference to 
 malloc'd size */
 
+
 /*************************/
-//SuperBlock
-struct superblock {
-	
-	int fsSize;
-	int nbInodes;
-	//jnode currentRoot;
-	//jnode *shadowroots[];
-	
-
-} superblock;
-
-
-
 //File
-struct file {
+typedef struct file {
 
 	char data[4096];
 	
@@ -41,12 +36,13 @@ struct file {
 
 /*************************/
 //Inode
- struct inode {
+typedef struct inode {
 
+	//Size in bytes = 16 + 4 + 56 + 4 = 80
+	char fname[16];
 	int size;
-	int rdPtr;
-	int wrPtr;
-
+	int direct[14];
+	int indirect;
 } inode;
 
 
@@ -55,9 +51,9 @@ struct file {
 
 /*************************/
 //Jnode
- struct jnode {
+typedef struct jnode {
 
-	//inode *ptrs [];
+	inode ptrs[200];
 
         
 } jnode;
@@ -65,7 +61,7 @@ struct file {
 
 /*************************/
 //Free Bit Map (FBM)
-struct FBM {
+typedef struct FBM {
 	
 	/* Each Char is 1 byte, so we have 
 	we can keep track of here 8*1024 = 8192 blocks.
@@ -82,16 +78,49 @@ struct FBM {
 
 /*************************/
 //Write Mask (WM)
-struct WM {
+typedef struct WM {
 
 
 
 } WM;
 
+/*************************/
+//SuperBlock
+typedef struct superblock {
+	
+	unsigned char magic[4];
+	int b_size;		//Likely 1024
+	int fs_size;		//Total File System Size
+	int nb_Inodes;
+	jnode currentRoot;
+	jnode shadowroots[];
+	
+
+} superblock;
+
+
+
 
 /********************************************************************************************************************/
 //Creates File System
 void mkssfs(int fresh) {
+	
+	int blocksize = BLOCK_SIZE;
+	int maxblock = MAX_BLOCK;
+	char* diskName = DISK_NAME;
+
+	//New Disk
+	if (fresh == 1) {
+		int successful = init_fresh_disk(diskName, blocksize, maxblock);
+		if (successful != 0)
+			perror("Error creating fresh disk");
+	}
+	else {
+		int successful = init_disk(diskName, blocksize, maxblock);
+		if (successful != 0)
+			perror("Error reloading disk");
+	}
+
 
 	//1. Setup Super Block (jnode)
 
@@ -302,9 +331,22 @@ int ssfs_restore(int cnum) {
 /********************************************************************************************************************/
 //Main
 int main(int argc, char* argv[]) {
+	
+	//Checks if file exists
+	char* diskname = DISK_NAME;
+	int fresh = 1;
+	FILE *fp;
+	if (fp = fopen(diskname, "r")) {
+		fclose(fp);
+		printf("file already exists\n");
+		fresh = 0;
+	}
+	
+	//Open disk emulator
+	mkssfs(fresh);
 
-
-
+	//Closes disk emulator
+	int close_disk();
 	return 0;
 }
 
