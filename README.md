@@ -1,6 +1,6 @@
 McGill, Comp 310 Final Project
 
-Makign a shadow file system based on linux POSIX Standards.
+Making a shadow file system based on linux POSIX Standards.
 
 Key Design Attributes:
 1. One Main Directory, no subdirectories
