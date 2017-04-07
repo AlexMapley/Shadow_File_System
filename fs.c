@@ -11,8 +11,8 @@
 #define MAX_BLOCK 1024;
 #define NUMBER_INODES 200;
 #define DISK_NAME "MapleDisk"
-#define MAX_INODES 14;
-#define INODES_PER_PAGE 13;
+#define INODE_POINTERS 13;	//starting at index 0
+#define INODES_PER_PAGE 16;
 
 
 
@@ -42,6 +42,8 @@ typedef struct inode {
 typedef struct FDT {
 	
 	inode openFiles[200];
+	int writePointers[200];
+	int readPointers[200];
 
 } FDT;
 
@@ -122,6 +124,8 @@ inode* xRoot;
 /********************************************************************************************************************/
 /* Miscellaneous Helper Methods */
 
+
+/*************************/
 //Power of Two
 int powerOfTwo(int x) {
 	int z = 2;
@@ -138,10 +142,14 @@ int powerOfTwo(int x) {
 
 }
 
+
+
+/*************************/
 //Next Free Write Block
 int findNextFreeBlock(FBM *freeBitMap, int flag) {
 
-	for (int i = 3; i < 1024; i++) {
+	//First non-allocated block is index 8
+	for (int i = 7; i < 1024; i++) {
 	
 		/* Here we are converting our char value to an integer,
 		increasing it by 2^(our shadow current root), and then
@@ -158,27 +166,78 @@ int findNextFreeBlock(FBM *freeBitMap, int flag) {
 				((int) (xFreeBitMap->map[i]) + powerOfTwo(xSuperBlock->mostRecentShadow));
 			}
 
-			//Return block index
 			return i;
 		}
 	}
 }
 
+
+
+/*************************/
 //Next Open File Descriptor
 int nextFreeFTB() {
-	for (int i = 0; i < 200; i++) {
-		
+
+	for (int i = 1; i < 200; i++) {
+
 		/* Returns index i, if
 		there is no struct at that index */
-		if ( xFileDescriptorTable->openFiles[i].indirect == 0) 
+		if ( xFileDescriptorTable->openFiles[i].indirect == 0) {		
 			return i;
+			
+		}
 	}
 }
 
 
 
 
+/*************************/
+//Is our file already open?
+int findOpenFile(int fileID) {
 
+	int limit = NUMBER_INODES;
+	inode* cacheNode = malloc(sizeof(inode));
+
+	/*Scans through file table starting at 2nd index (1),
+	caching each stored inode and checking it's id */
+	for (int i = 1; i < limit; i++) {	
+	
+
+		//Tests if inode exists at this index
+		if ( xFileDescriptorTable->openFiles[i].indirect != 0) {
+		printf("At index %i, inode #%i\n", i, xFileDescriptorTable->openFiles[i].indirect); //Tester		
+
+			//Is it the correct file?
+			if (xFileDescriptorTable->openFiles[i].indirect == fileID) {
+
+				printf("MATCH AT INDEX %i\n", i);
+		
+				
+				//Return Inode index in FDT
+				return i;
+			}
+		}
+		
+	}	
+
+	//Unsuccesful
+	return -1;
+}
+
+
+/*************************/
+//Deep Copy Inode
+void inodeDeepCopy(inode *inode1, inode *inode2) {
+
+	//Copy Indirect
+	inode1->indirect = inode2->indirect;
+	
+	//Copy Direct Pointers
+	for (int i = 0; i < 14; i++) {
+		memcpy(&(inode1->direct[i]), &(inode2->direct[i]), sizeof(int));
+		//inode1->direct[i] = &(inode2->direct[i]);
+	}
+}
 
 
 
@@ -215,9 +274,11 @@ void mkssfs(int fresh) {
 	
 		/*Root inode
 		Initialized so that its first data block
-		(the root directory) begins at block 4 */
+		(the root directory) begins at block 8,
+		and all other pointers are 0 */
 		inode* root = malloc(sizeof(inode));
-		root -> direct[0] = 3;
+		memset(root->direct, 0, sizeof(root->direct));
+		root -> direct[0] = 7;
 		root -> indirect = 1;
 		superblock -> currentRoot = *root;
 		
@@ -225,8 +286,8 @@ void mkssfs(int fresh) {
 		/* 3. Initialize and write the
 		Write Mask and Free Bit Map.
 		For convinience, I'm going to write these
-		at blocks 2 and 3 respectively. Block 4
-		will be the first page of our root directory.
+		at blocks 2 and 3 respectively. Blocks 4-8
+		are part of our file lookup directory for filenames.
 		We will initialize xFreeBitMap to have the 
 		(char) value of 1 for indices 0-3,
 		so that no files can be written in those
@@ -234,7 +295,7 @@ void mkssfs(int fresh) {
 		and it can be assumed that in initialization we 
 		are working from shadow root 0. */
 		FBM* freeBitMap = malloc(sizeof(FBM));
-		for (int i = 0 ; i < 4; i ++) {
+		for (int i = 0 ; i < 8; i ++) {
 			freeBitMap -> map[i] = ((char) 1); 
 		}
 
@@ -253,8 +314,6 @@ void mkssfs(int fresh) {
 		xFreeBitMap = freeBitMap;
 		xWriteMask = writeMask;
 		xRoot = root;
-
-
 		
 	}
 
@@ -288,7 +347,7 @@ void mkssfs(int fresh) {
 /********************************************************************************************************************/
 //Opens/Creates the given file
 int ssfs_fopen(char * name) {
-	
+
 	/*Note:
 	If we are creating a new file, we will need to
 	duplicate, modify, and replace our root directory
@@ -300,127 +359,191 @@ int ssfs_fopen(char * name) {
 /****************************/
 
 	/* 1. See if our file exists. This
-	will involve scanning through all of our rott directory
+	will involve scanning through all of our root directory
 	pages, and scanning the file names associated with
 	each file inode */
 
 	//Scanning Variables
 	int blockIndex, pageIndex, rootIndex;
-	char xname[16];
+	int chosenBlockIndex, chosenPageIndex;
+	int fileFound = 0;
+	int foundEmptySpace = 0;
+	unsigned char nameBuf[16];
+	void *pageBuf[1024];
+	unsigned char xname[16];
 	strcpy(xname, name);
-	char nameBuf[16];
-	char pageBuf[1024];
+	int readSize  = sizeof(nameBuf);
+	int pageLimit = 64;
+	int maxPointers = INODE_POINTERS;
 
-	int readSize  = sizeof(inode) + sizeof(nameBuf);
 
-	int pageLimit = INODES_PER_PAGE;
-	int maxNodes = MAX_INODES;
+	/*REDUCTION SEARCH
+	We only match our file names to our
+	saved disk data with
+	the first 8 characters in each string
+	for comparison. This is the result
+	of an incredibly frustrating and elusive bug,
+	wherein I can only copy the first 8 characters
+	of a name from disk once calling fopen again. */
+	char reducedName[] = {xname[0],xname[1],xname[2],xname[3],xname[4],xname[5],xname[6],xname[7], 0};
 
-	//Actual Scan
-	for (rootIndex = 0; rootIndex < pageLimit; rootIndex++) {
 
-		//Get block index from root pointer
-		blockIndex = xRoot->direct[rootIndex];
-		
-		printf("Index: %i\n", xRoot->direct[rootIndex]);				//TESTER
+	//Scan through lookup pages, blocks indexed 4-8
+	for (blockIndex = 3; blockIndex < 7; blockIndex++) {
 
 		//Place entire block into buffer
+		memset(pageBuf,1,1024);
 		read_blocks(blockIndex, 1, pageBuf);
-
-		
+	
+	
 		//Read each name from block into buffer
 		for (pageIndex = 0; pageIndex < pageLimit; pageIndex++) {
 
+			//Read stored name into buffer
+			memcpy(&nameBuf[0], &pageBuf[pageIndex * 16], 16);		
 			
-			strncpy(nameBuf, pageBuf + (pageIndex * readSize), sizeof(nameBuf));
-
-
-			printf("Page index: %i\n", pageIndex);					//TESTER
-	
-			//Break Condition 1, name found
-			if(!(strcmp(nameBuf, name))) {
+			//Break Condition, name found
+			if(!(strcmp(nameBuf, reducedName))) {
 				printf("Found filename: '%s'\n", nameBuf);
+				fileFound = 1;
+				chosenBlockIndex = blockIndex;
+				chosenPageIndex = pageIndex;
 				break;
 			}
-			//Break Condition 2, no name stored
-			if(strlen(nameBuf) == 0) {
-				printf("No matching filename found\n");					//TESTER
-				break;
+			//Found next empty space
+			if(strlen(nameBuf) == 0 && foundEmptySpace == 0) {
+				foundEmptySpace = 1;
+				chosenBlockIndex = blockIndex;
+				chosenPageIndex = pageIndex;
 			}
 		}
 		
 
-		//Outer Break  1, name found
-		if (strcmp(nameBuf, name)) 
+		//Outer Break, name found
+		if (fileFound == 1) 
 				break;
 
-		//Outer Break 2, no name stored
-		if (strlen(nameBuf) == 0)
-				break;
-		
 	}
 
 
 /****************************/
 
-	/* 2. (Possibly) Create File 					//BUG: ONLY WORKS AT TOP OF BLOCK
-	Here we need to create a new inode,
-	either in our current page or inside a new page */
-
-	if (strlen(nameBuf) == 0) {
-
-
-		/* Do we need to create a new page? 
-		references 'findNextFreeBlock' helper method above.
-		This will return our next free index, and the flag 1
-		will mark this index as now containing data */
-		if ( pageIndex == 13) {
-
-			blockIndex = findNextFreeBlock(xFreeBitMap, 1);
-			
-			//Empty our page buffer, as we're starting a new page
-			memset(&pageBuf[0], 0, sizeof(pageBuf));
-			pageIndex = 0;
+	/* 2. (Possibly) Cache Existing Node */
+	if (fileFound == 1) {
 		
-		}
-			
 		
-		/* Set Inode pointer to next available block,
-		and write this pointer with it's name id into our
-		root directory. 
-		Also, set the inode's indrect index. */
-		newNode -> direct[0] = findNextFreeBlock(xFreeBitMap, 1);
-		newNode -> indirect = (((rootIndex+1) * (pageIndex+1)) + 1);
-		
-		printf("inode number: %i\n",  ((rootIndex+1) * (pageIndex+1) ) + 1);		//TEST
+		/*Shift block and page index to where
+		our node is stored in the disk-space */
+		blockIndex = chosenBlockIndex;
+		pageIndex = chosenPageIndex;
 
-		//Write new iNode to our page buffer
-		memcpy(&pageBuf[((pageIndex+1) * 80)], name, sizeof(name));
-		memcpy(&pageBuf[((pageIndex+1) * 80) + sizeof(newNode)], newNode, sizeof(newNode));
+		//Get location of inode
+		int fileNumber = (((blockIndex - 3) *  64) + pageIndex);
+		int directPointer = (fileNumber / 16);
+		int writeAddress = ((fileNumber % 16) * 64);
 
 
-		
-		/* Rewrite this page block, with our updated 
-		root directory page */
-		write_blocks(blockIndex, 1, pageBuf);					
+		//Cache Root Inode Page
+		read_blocks(xRoot->direct[directPointer], 1, pageBuf);
+
+
+		//Memcpy into new inode
+		memcpy(&newNode, &pageBuf[writeAddress], sizeof(newNode));
+
+
+
+		/* 2.1 Checks if file is already open in FDT */
+		int openFd = findOpenFile(newNode->indirect);
 	
-		
-		
+
+		if (openFd != -1) {
+			return openFd;
+			printf("FILE ALREADY OPEN AT INDEX #%i\n", openFd);			//TESTER
+		}
+
+		/* 2.2 Else, create entry in Open File Descriptor Table,
+		and then return that entry index */
+		else {
+			int fd = nextFreeFTB();
+			printf("OPENING FILE AT INDEX #%i\n", fd);			//TESTER
+
+			xFileDescriptorTable -> openFiles[fd] = *newNode;
+			xFileDescriptorTable -> readPointers[fd] = 0;		
+			xFileDescriptorTable -> writePointers[fd] = 0;
+
+			//Return Index
+			return fd;
+		}
 	}
 
-	/*3. Create entry in Open File Descriptor Table,
-	and then return that entry index */
-	int fd = nextFreeFTB();
-	xFileDescriptorTable -> openFiles[fd] = *newNode;
-	
-	printf("fd: %i\n", fd);
-	return fd;
+/****************************/
+
+	/* 3. Else Create File 					
+	Here we need to create a new inode,
+	either in our current page or inside a new page.
+`	Also, we need to add its name to the 
+	lookup pages. */
+
+	else {
+
+		/*Shift block and page index to the empty
+		space we found before */
+		blockIndex = chosenBlockIndex;
+		pageIndex = chosenPageIndex;
+
+		//Place entire block into buffer, again
+		read_blocks(blockIndex, 1, pageBuf);
+
+		//Write new file name	
+		memcpy(&pageBuf[pageIndex * 16], name, sizeof(name));
+		write_blocks(blockIndex, 1, pageBuf);
+
+
+		/* Find next available spot to store inode
+		in root directory pages. 
+		Will be ((blockindex - 3) *  64) for our fileNumber,
+		(fileNumber / 16) to find our root->direct pointer,
+		((fileNumber % 16)-1) to find our next empty spot,
+		and thus a write address of ((next empty spot) * 64) */
+		int fileNumber = (((blockIndex - 3) *  64) + pageIndex);
+		int directPointer = (fileNumber / 16);
+		int writeAddress = ((fileNumber % 16) * 64);
+		newNode -> indirect = (fileNumber + 1);
+
+		//Initialize inode pointers to 0
+		memset(newNode->direct, 0, sizeof(newNode->direct));
+
+		//Do we designate a new root page?
+		if (writeAddress == 0) {
+			xRoot -> direct[directPointer] = findNextFreeBlock(xFreeBitMap, 1);
+		}
+
+
+		//Cache Root Inode Page
+		read_blocks(xRoot->direct[directPointer], 1, pageBuf);
+
+		//Memcpy new inode
+		memcpy(&pageBuf[writeAddress], &newNode, sizeof(newNode));
+
+		//Store updated Root Page
+		write_blocks(xRoot->direct[directPointer], 1, pageBuf);		
+
+		/* 3.1 Create entry in Open File Descriptor Table,
+		and then return that entry index */
+		int fd = nextFreeFTB();
+
+		//printf("NEW NODE #%i, FILE AT INDEX #%i\n", newNode->indirect, fd);			//TESTER
+
+		xFileDescriptorTable -> openFiles[fd] = *newNode;
+		xFileDescriptorTable -> readPointers[fd] = 0;
+		xFileDescriptorTable -> writePointers[fd] = 0;
+
+
+		//Return Index
+		return fd;
+
+	}			
 }
-
-
-
-
-
 
 
 
@@ -428,11 +551,35 @@ int ssfs_fopen(char * name) {
 //Closes the given file
 int ssfs_fclose(int fileID) {
 
+	/* Helper Method defined above,
+	as I use it i na few different functions.
+	Checks if the file exists in my FDT,
+	and returns its index. If it doesn't exist,
+	returns -1 */
+	
+	printf("\n\nTRYING TO CLOSE INODE #%i\n", fileID);				//TESTER
 
+	int inodeLocation = findOpenFile(fileID);
 
-
-	//Successful
+	
+	//No such file
+	if (inodeLocation == -1) {
+		printf("No such file found\n");
+		return -1;
+	}
+	/* Found our file!
+	replace it with an empty iNode */
+	else {
+		inode* shellNode = malloc(sizeof(inode));
+		shellNode->indirect = 0;
+		xFileDescriptorTable -> openFiles[inodeLocation] = *shellNode;
+		xFileDescriptorTable -> readPointers[inodeLocation] = 0;		
+		xFileDescriptorTable -> writePointers[inodeLocation] = 0;
+		return 0;
+	}
+	
 	return 0;
+
 }
 
 
@@ -446,7 +593,21 @@ int ssfs_fclose(int fileID) {
 //Seek (Read) to the location from the beginning
 int ssfs_frseek(int fileID, int loc) {
 
-	//Modify read pointer
+	//Is this an open file?
+	if (findOpenFile(fileID) == -1) {
+		printf("No such file\n");
+		return -1;
+	}
+	
+	//Invalid values
+	if (loc < 0 || loc > 14335) {
+		printf("Invalid location\n");
+		return -1;
+	}
+	
+	/* Everything checks out,
+	set location in FDT */
+	xFileDescriptorTable -> readPointers[fileID] = loc;
 
 	//Success
 	return 0;
@@ -464,7 +625,22 @@ int ssfs_frseek(int fileID, int loc) {
 //Seek (Write) to the location from the beginning
 int ssfs_fwseek(int fileID, int loc) {
 
-	//Modify write pointer
+	//Is this an open file?
+	if (findOpenFile(fileID) == -1) {
+		printf("No such file\n");
+		return -1;
+	}
+	
+	//Invalid values
+	if (loc < 0 || loc > 14335) {
+		printf("Invalid location\n");
+		return -1;
+	}
+	
+	/* Everything checks out,
+	set location in FDT */
+	xFileDescriptorTable -> writePointers[fileID] = loc;
+
 
 	//Success
 	return 0;
@@ -481,13 +657,173 @@ int ssfs_fwseek(int fileID, int loc) {
 //Write buf characters into disk
 int ssfs_fwrite(int fileID, char* buf, int length) {
 
-	//1. Get Block to write
+	int blockSize = BLOCK_SIZE;
+	int maxNodes = INODE_POINTERS;
 
-	//2. Write the block
+	//Is this an open file?
+	if (findOpenFile(fileID) == -1) {
+		printf("No such file\n");
+		return -1;
+	}
+	
+	//Declare buffers
+	char pageBuf[blockSize];
+	int addr = 0;
+
+	//Find readPointer
+	int writePointer = xFileDescriptorTable->writePointers[fileID];
+	int startingNode = (writePointer / blockSize);
+	int startingByte = (writePointer % blockSize);
+
+
+	//Cache open Inode from File Descriptor Table
+	inode* cacheNode = malloc(sizeof(inode));
+	int limit = NUMBER_INODES;
+
+	/*Scans through file table starting at 2nd index (1),
+	caching each stored inode and checking it's id */
+	for (int i = 1; i < limit; i++) {							
+
+		//Is it the correct file?
+		if (xFileDescriptorTable->openFiles[i].indirect == fileID) {
+			
+			/* Deep Copy Inode at index,
+			references prior defined helper method,
+			'inodeDeepCopy' */
+			inodeDeepCopy(cacheNode, &(xFileDescriptorTable->openFiles[i])); 
+
+			//Break outer loop				
+			i+=1024;
+		}
+	}
+
+	//Does this write require designating a first new block?
+	if (cacheNode->direct[startingNode] == 0) {
+		cacheNode->direct[startingNode] = findNextFreeBlock(xFreeBitMap, 1);
+		printf("\n\nInode #%i, with direct[0] pointing to %i\n", cacheNode->indirect, cacheNode->direct[0]);
+	}
+	
+	/* Preform our writing at each block.
+	Will we need to designate even more blocks?
+	Check the length of our input compared to our
+	starting byte, and see if to accomodate an
+	input of that length we'll need to designate
+	more blocks */
+	int tmpNode = startingNode;
+	int inputAddr = 0;
+	int remainingInputLength = length;
+	while(remainingInputLength >= 0 && tmpNode < 14) {
+	
+		//Read page into buffer
+		read_blocks(cacheNode->direct[tmpNode], 1, pageBuf);
+	
+		//Write to buffer
+		memcpy(&pageBuf[startingByte], &buf[0], (remainingInputLength % blockSize)); 
+
+		//Adjust Write Pointer
+		xFileDescriptorTable->writePointers[fileID] += (remainingInputLength % blockSize);
+
+		//Adjust RemainingInputLength
+		remainingInputLength -= (blockSize - startingByte);
+		
+		//Write buffer into page
+		write_blocks(cacheNode->direct[tmpNode], 1, pageBuf);
+		
+
+		//Allocate next block, if unallocatated
+		tmpNode++;
+		if (cacheNode->direct[tmpNode] == 0)
+			cacheNode->direct[tmpNode] = findNextFreeBlock(xFreeBitMap, 1);
+
+		//Onto the next theoretical block
+		remainingInputLength -= blockSize;
+
+		//Set startingByte to 0
+		startingByte = 0;
+	}
+
+
+	//Store Altered Inode in FDT
+	for (int i = 1; i < limit; i++) {							
+
+		//Is it the correct file?
+		if (xFileDescriptorTable->openFiles[i].indirect == fileID) {
+			
+			/* Deep Copy Inode at index,
+			references prior defined helper method,
+			'inodeDeepCopy' */
+			inodeDeepCopy(&(xFileDescriptorTable->openFiles[i]), cacheNode); 
+
+			//Break outer loop				
+			i+=1024;
+		}
+	}
+	
+	/*Store Altered Inode to Disk,
+	this is the same code I used for 'fopen',
+	but isn't well encapsulated in a 
+	helper method outside the scope of these
+	two larger functions */
+	inode* scanNode = malloc(sizeof(inode));
+	int pageLimit = 16;
+	void *inodeBuf[1024];
+	int blockIndex, pageIndex;
+
+	//Scan through xRoot pages for our inode
+	for (blockIndex = 0; blockIndex < 14; blockIndex++) {
+	
+		//Page invalid, break
+		if (xRoot->direct[blockIndex] == 0)
+			break;
+
+		//Gets inode page into buffer
+		read_blocks(xRoot->direct[blockIndex], 1, inodeBuf);
+
+		//Read each inode from block into buffer
+		for (pageIndex = 0; pageIndex < pageLimit; pageIndex++) {
+
+			//Read stored name into buffer
+			memcpy(&scanNode, &inodeBuf[pageIndex * sizeof(inode)], sizeof(scanNode));		
+			
+//TESTER
+printf("At index %i, ScanNode id: %i, direct[0]: %i\n", pageIndex, scanNode->indirect, scanNode->direct[0]);
+
+			//Found our inode?
+			if (scanNode->indirect == fileID) {
+
+	
+//TESTER
+printf("Replacing with id = %i and direct[0] = %i\n\n\n", cacheNode->indirect, cacheNode->direct[0]);
+
+
+				//Replace it with our updated version
+				memcpy(inodeBuf + (pageIndex * sizeof(inode)), &cacheNode, sizeof(inode));
+				//memcpy(&inodeBuf[pageIndex * sizeof(inode)], &cacheNode, sizeof(inode));
+				
+				//Overwrite disk section
+				write_blocks(xRoot->direct[blockIndex], 1, inodeBuf);
+			
+				
+
+				
+//TESTER
+printf("At index %i, new ScanNode id: %i, direct[0]: %i\n", pageIndex, scanNode->indirect, scanNode->direct[0]);
+
+				//Break
+				pageIndex+=1024;
+				blockIndex+=1024;
+				
+			} 
+		}	
+	}		
+	//Free cacheNode
+	free(cacheNode);
+
+	//Free scanNode
+	free(scanNode);
 
 	return length;
 }
-
 
 
 
@@ -498,13 +834,92 @@ int ssfs_fwrite(int fileID, char* buf, int length) {
 //Read characters from disk into buf
 int ssfs_fread(int fileID, char* buf, int length) {
 
+	int blockSize = BLOCK_SIZE;
+	int maxNodes = INODE_POINTERS;
 
+	//Is this an open file?
+	if (findOpenFile(fileID) == -1) {
+		printf("No such file\n");
+		return -1;
+	}
+
+	//Declare buffers
+	char pageBuf[blockSize];
+	char masterBuf[blockSize * maxNodes];
+	//int addr = 0;
+
+	//Find readPointer
+	int readPointer = xFileDescriptorTable->readPointers[fileID];
+	int startingNode = (readPointer / blockSize);
+	int startingByte = (readPointer % blockSize);
+	printf("readPointer: %i, startingNode: %i, startingByte %i\n", readPointer, startingNode, startingByte);
+
+	//Cache open Inode from File Descriptor Table
+	inode* cacheNode = malloc(sizeof(inode));
+	int limit = NUMBER_INODES;
+
+	/*Scans through file table starting at 2nd index (1),
+	caching each stored inode and checking it's id */
+	for (int i = 1; i < limit; i++) {							
+
+		//Is it the correct file?
+		if (xFileDescriptorTable->openFiles[i].indirect == fileID) {
+
+			/* Deep Copy Inode at index,
+			references prior defined helper method,
+			'inodeDeepCopy' */
+			inodeDeepCopy(cacheNode, &(xFileDescriptorTable->openFiles[i])); 
+
+			//Break loop				
+			i+=1024;
+		}
+	}
+
+	printf("Inode #%i, directPointer[0] to block #%i\n", cacheNode->indirect, cacheNode->direct[0]);
+
+	/* Preform our reading at each block.
+	Will stop if we are requesting to
+	read input that isn't there */
+	int tmpNode = startingNode;
+	int inputAddr = 0;
+	int remainingInputLength = length;
+	int bufIndex = 0;
+	while(remainingInputLength >= 0 && tmpNode < 14) {
+	
+			
+		//Read page into buffer
+		read_blocks(cacheNode->direct[tmpNode], 1, pageBuf);
+	
+		//Write to buffer
+		memcpy(&masterBuf[bufIndex], &pageBuf[startingByte], (remainingInputLength % blockSize)); 
+
+		//Adjust Read Pointer
+		xFileDescriptorTable->readPointers[fileID] += (remainingInputLength % blockSize);
+
+
+
+		//Adjust RemainingInputLength
+		remainingInputLength -= (blockSize - startingByte);
+		
+		//Onto the next theoretical block
+		remainingInputLength -= blockSize;
+	
+		//Increment Buf Index
+		bufIndex += (blockSize - startingByte);
+
+		//Set startingByte to 0
+		startingByte = 0;
+	}
+
+	printf("masterBuf contents: %s\n", &masterBuf[0]);
+
+	strcpy(buf, masterBuf);
+
+	//Free cacheNode
+	free(cacheNode);
 
 	return length;
 }
-
-
-
 
 
 
@@ -515,6 +930,145 @@ int ssfs_fread(int fileID, char* buf, int length) {
 //Removes a file from the filesystem
 int ssfs_remove(char* file) {
 
+	printf("REMOVING!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");			//TESTER
+
+	/* 1. Find our file in the lookup table.
+	Either we will find it and remove it,
+	or we will not find it if it doesn't exist
+	and return a failure */
+
+	int blockIndex, pageIndex, rootIndex;
+	int chosenBlockIndex, chosenPageIndex;
+	int fileFound = 0;
+	int foundEmptySpace = 0;
+	char nameBuf[16];
+	void *pageBuf[1024];
+	char xname[16];
+	strcpy(xname, file);
+	int readSize  = sizeof(nameBuf);
+	int pageLimit = 64;
+	int maxPointers = INODE_POINTERS;
+
+	//Scan through lookup pages, blocks indexed 4-8
+	for (blockIndex = 3; blockIndex < 7; blockIndex++) {
+
+
+		//Place entire block into buffer
+		read_blocks(blockIndex, 1, pageBuf);
+
+		
+		//Read each name from block into buffer
+		for (pageIndex = 0; pageIndex < pageLimit; pageIndex++) {
+
+			
+			memcpy(nameBuf, pageBuf + (pageIndex * readSize), sizeof(nameBuf));
+
+
+			//Break Condition, name found
+			if(!(strcmp(nameBuf, xname))) {
+				printf("Found filename: '%s'\n", nameBuf);
+				fileFound = 1;
+				chosenBlockIndex = blockIndex;
+				chosenPageIndex = pageIndex;
+				break;
+			}
+			//Found next empty space
+			if(strlen(nameBuf) == 0 && foundEmptySpace == 0) {
+				foundEmptySpace = 1;
+				chosenBlockIndex = blockIndex;
+				chosenPageIndex = pageIndex;
+			}
+		}
+		
+
+		//Outer Break, name found
+		if (fileFound == 1) {
+			break;
+		}
+	}
+
+	//Makes sure our file exists
+	if (fileFound == 0) {
+		printf("Can't remove a nonexistant file\n");
+		return -1;
+	}	
+	
+	//Remove filename from lookup table
+	char cleaner[16];
+	memcpy(&pageBuf[pageIndex * 16], cleaner, sizeof(cleaner));
+	write_blocks(blockIndex, 1, pageBuf);
+
+
+/**************************/
+
+	/* 2. Remove this inode from the data pages
+	pointed to by our root node */
+	inode *cacheNode = malloc(sizeof(inode));
+	
+	//Set indexes
+	blockIndex = chosenBlockIndex;
+	pageIndex = chosenPageIndex;
+
+	/* Same Modular Arithmetic for finding
+	inodes as in ssfs_fopen*/
+	int fileNumber = (((blockIndex - 3) *  64) + pageIndex);
+	int directPointer = (fileNumber / 16);
+	int writeAddress = ((fileNumber % 16) * 64);
+
+	//Cache Root Inode Page
+	read_blocks(xRoot->direct[directPointer], 1, pageBuf);
+		
+	//Memcpy inode into cache
+	memcpy(&cacheNode, &pageBuf[writeAddress], sizeof(cacheNode));
+
+
+	//Memset inode from page
+	memset(&pageBuf[writeAddress], 0, sizeof(cacheNode));
+
+	//Store updated Root Page, with this inode removed
+	write_blocks(xRoot->direct[directPointer], 1, pageBuf);	
+		
+		
+/*****************/
+
+// 3. Removes entry from FDT, if open
+	if (findOpenFile(cacheNode->indirect) != -1) {
+		printf("closing open file\n");
+		ssfs_fclose(cacheNode->indirect);
+	}
+
+/*****************/
+
+	/* 4. Then, free all data blocks pointed to 
+	by the inode. With each block we free, we
+	also overwrite our FBM to show that these
+	spots are now open */
+	for (int k = 0; k < maxPointers; k++) {
+			
+		/*If block pointer is empty, we 
+		free our cacheNode and return */
+		if (cacheNode->direct[k] == 0) {
+			free(cacheNode);			
+			return 0;
+		}
+		//Erase Block Contents
+		char cleaner[1024];
+		write_blocks(cacheNode->direct[k], 1, cleaner);
+
+		/* Modify FBM, as always preforming complicated
+		modular arithmetic */
+		int fbmVal = (int) xFreeBitMap->map[cacheNode->direct[k]];
+		fbmVal = fbmVal - powerOfTwo(xSuperBlock->mostRecentShadow);
+
+		//Convert fbmVal back to char and store
+		xFreeBitMap->map[cacheNode->direct[k]] = (char) fbmVal;			
+
+	} 
+
+	//Free cacheNode
+	free(cacheNode);
+
+	return 0;
 }
 
 
@@ -582,6 +1136,8 @@ int ssfs_restore(int cnum) {
 
 /********************************************************************************************************************/
 //Main
+/*
+
 int main(int argc, char* argv[]) {
 	
 	char* diskname = DISK_NAME;
@@ -601,8 +1157,62 @@ int main(int argc, char* argv[]) {
 	mkssfs(fresh);
 
 
-	//Open test
-	ssfs_fopen("file1");
+/*****************************/
+//Open test
+
+	//printf("\nOPEN TESTS:\n");
+	//int fd = ssfs_fopen("file1");
+/*	fd = ssfs_fopen("file2");
+	fd = ssfs_fopen("file3");
+	fd = ssfs_fopen("file1");
+	fd = ssfs_fopen("file2");
+	fd = ssfs_fopen("file3");
+
+
+/*****************************/
+//Close Tests
+
+/*
+	ssfs_fclose(1);
+	ssfs_fclose(1);
+	printf("\n----------------------------------------\nCLOSE TESTS:\n");
+	ssfs_fclose(2);
+	printf("\nTrying to close file again\n");
+	ssfs_fclose(2);
+
+
+/*****************************/
+//Remove tests
+	/*printf("\n----------------------------------\nREMOVE TESTS:\n");
+	ssfs_remove("file1");
+	ssfs_remove("file2");
+	ssfs_remove("file3");
+	printf("\n----------------------------------\nTRYING TO REMOVE FILES TWICE:\n");
+	ssfs_remove("file1");
+	ssfs_remove("file2");
+	ssfs_remove("file3");
+	ssfs_remove("file4");
+	
+
+/*****************************/
+//Read / Write Tests
+/*
+printf("\n----------------------------------------\nWRITE TESTS:\n");
+
+char* input = "Hello!";
+printf("Input: %s\n", input);
+ssfs_fwrite(1, input, sizeof(input));
+
+printf("\n----------------------\nRead TESTS:\n");
+
+char* output = (char *)malloc(strlen(input)+1);
+ssfs_fread(1, output, sizeof(input));
+printf("Output: %s\n", output);
+
+
+/*****************************/
+/*
+printf("\n\n");
 
 	//Closes disk emulator
 	int close_disk();
@@ -610,5 +1220,5 @@ int main(int argc, char* argv[]) {
 	//Removes file				//TEST PHASE 1
 	unlink("MapleDisk");
 	return 0;
-}
+} */
 
