@@ -1,36 +1,78 @@
-Evaluation Grid: ( 0 / 100 )
+Evaluation Grid: ( 70 / 80 )
 
-File System compiling and files created, 
-some data writes working, reads working ( 0 / 50 )
-
-Reads and Writes working with seeking ( 0 / 10 )
-
-Commit and Restore working ( 0 / 30 )
-
-Memory Leak Problems	( 0 / 5 )
-
-Code Quality and General Documentation ( 1 / 5 )
+Function Skeletons:						( 15 / 15 )
+File System Compiling and Partially Working: 			( 18 / 20 )
+Random Read/Writes working with Seeking, 
+Deletes working, able to retrieve previously written data,
+file persistence:						( 18 / 20 )
+Reads and Writes working with Seeking:				( 10 / 10 )
+Memory Leak Problems:						( 0 / 5  )
+Code Quality and General Documentation:				( 9 / 10 )
 
 
+Bonus: ( 0 / 30 )
+Commit and Restore Working:					( 0 / 30 )
+
+
+Functions: ( 6 / 10 )
+mkssfs: need to fix old disk bugs
+
+fopen: good
+
+fclose: good
+
+frseek: good
+
+fwseek: good
+
+fwrite: Need to store inode back
+in root directory
+
+fread: getting there
+
+remove: good
+
+commit: unimplemented
+
+restore: unimplemented
+
+/******************/
+File Opened test.pdf
+File Opened URWET.OFM
+File Opened UOWUY.IPL
+File Opened ALLOW.UCP
+File Opened PUMQV.RQR
+/******************/
 
 
 
-Helpful Info:
-disk_emu function headers
-int init_fresh_disk(char *filename, int block_size, int num_blocks);
-int init_disk(char *filename, int block_size, int num_blocks);
-int read_blocks(int start_address, int nblocks, void *buffer);
-int write_blocks(int start_address, int nblocks, void *buffer);
-int close_disk();
+BUGS:
+ - Magic number Initialization in superblock?
+ - MAXBLOCK error in disk_emu.c
+
+
+
+TESTS:
+1: 5 errors, test 15, Read
+2: 30 errors until test_num[7], seg fault at test_read_write_out_of_bound()
 
 
 
 
+(March 25th, Day 1): 309 lines,  1 %
 
+(March 26th, Day 2): 374 lines, 13 %
 
+(March 27th, Day 3): 401 lines, 16 %
 
-Work Progress ( 1 / 17)
+(March 28th, Day 4): 613 lines, 23 %
 
-(March 25th, Day 1): 309 lines, 1 %
+(March 29th, Day 5): 820 lines, 28 %
 
-(March 26th, Day 2):
+(April 3rd, Day 6): 976 lines,  48 %
+
+(April 4th, Day 7): 973 lines,  59 %
+
+(April 5th, Day 8): 1150 lines,  69 %
+
+(April 6th, Day 9): 1156 lines, 
