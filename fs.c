@@ -118,9 +118,6 @@ inode* xRoot;
 
 
 
-
-
-
 /********************************************************************************************************************/
 /* Miscellaneous Helper Methods */
 
@@ -204,16 +201,17 @@ int findOpenFile(int fileID) {
 	
 
 		//Tests if inode exists at this index
-		if ( xFileDescriptorTable->openFiles[i].indirect != 0) {
-		printf("At index %i, inode #%i\n", i, xFileDescriptorTable->openFiles[i].indirect); //Tester		
+		if ( xFileDescriptorTable->openFiles[i].indirect != 0) {		
 
 			//Is it the correct file?
 			if (xFileDescriptorTable->openFiles[i].indirect == fileID) {
 
 				printf("MATCH AT INDEX %i\n", i);
+				printf("(find) file direct[0] = %i, indirect = %i\n", xFileDescriptorTable->openFiles[i].direct[0], xFileDescriptorTable->openFiles[i].indirect);
 		
 				
 				//Return Inode index in FDT
+				free(cacheNode);
 				return i;
 			}
 		}
@@ -221,6 +219,7 @@ int findOpenFile(int fileID) {
 	}	
 
 	//Unsuccesful
+	free(cacheNode);
 	return -1;
 }
 
@@ -235,7 +234,6 @@ void inodeDeepCopy(inode *inode1, inode *inode2) {
 	//Copy Direct Pointers
 	for (int i = 0; i < 14; i++) {
 		memcpy(&(inode1->direct[i]), &(inode2->direct[i]), sizeof(int));
-		//inode1->direct[i] = &(inode2->direct[i]);
 	}
 }
 
@@ -248,8 +246,11 @@ void inodeDeepCopy(inode *inode1, inode *inode2) {
 //Creates File System
 void mkssfs(int fresh) {
 
-	//Initialize File Descriptor Table
+	// Initialize File Descriptor Table
 	xFileDescriptorTable = malloc(sizeof(FDT));
+	for (int i = 0; i < 200; i++) 
+		xFileDescriptorTable->openFiles[i].indirect = 0;
+
 
 	int blocksize = BLOCK_SIZE;
 	int maxblock = MAX_BLOCK;
@@ -403,15 +404,16 @@ int ssfs_fopen(char * name) {
 			memcpy(&nameBuf[0], &pageBuf[pageIndex * 16], 16);		
 			
 			//Break Condition, name found
-			if(!(strcmp(nameBuf, reducedName))) {
-				printf("Found filename: '%s'\n", nameBuf);
+			if(strcmp(nameBuf, reducedName) == 0) {
+				printf("\n1. Found filename: '%s' at index %i\n", nameBuf, pageIndex);
 				fileFound = 1;
-				chosenBlockIndex = blockIndex;
 				chosenPageIndex = pageIndex;
+				chosenBlockIndex = blockIndex;
+				
 				break;
 			}
 			//Found next empty space
-			if(strlen(nameBuf) == 0 && foundEmptySpace == 0) {
+			if(strlen(nameBuf) == 0 && foundEmptySpace == 0 && fileFound == 0) {
 				foundEmptySpace = 1;
 				chosenBlockIndex = blockIndex;
 				chosenPageIndex = pageIndex;
@@ -446,32 +448,35 @@ int ssfs_fopen(char * name) {
 		//Cache Root Inode Page
 		read_blocks(xRoot->direct[directPointer], 1, pageBuf);
 
+		printf("fileNumber: %i\n", fileNumber);
+
 
 		//Memcpy into new inode
 		memcpy(&newNode, &pageBuf[writeAddress], sizeof(newNode));
 
-
-
 		/* 2.1 Checks if file is already open in FDT */
 		int openFd = findOpenFile(newNode->indirect);
-	
-
 		if (openFd != -1) {
+			//Free newNode and return
+			free(newNode);
 			return openFd;
-			printf("FILE ALREADY OPEN AT INDEX #%i\n", openFd);			//TESTER
 		}
 
 		/* 2.2 Else, create entry in Open File Descriptor Table,
 		and then return that entry index */
 		else {
 			int fd = nextFreeFTB();
-			printf("OPENING FILE AT INDEX #%i\n", fd);			//TESTER
 
-			xFileDescriptorTable -> openFiles[fd] = *newNode;
+			//Copy newNode to FDT
+			memcpy(&(xFileDescriptorTable -> openFiles[fd]), newNode, sizeof(inode));
+
+			//Set read/write pointers
 			xFileDescriptorTable -> readPointers[fd] = 0;		
 			xFileDescriptorTable -> writePointers[fd] = 0;
 
+		
 			//Return Index
+			free(newNode);
 			return fd;
 		}
 	}
@@ -511,7 +516,9 @@ int ssfs_fopen(char * name) {
 		newNode -> indirect = (fileNumber + 1);
 
 		//Initialize inode pointers to 0
-		memset(newNode->direct, 0, sizeof(newNode->direct));
+		for ( int k = 0; k < 14; k++)
+			newNode->direct[k] = 0;
+		
 
 		//Do we designate a new root page?
 		if (writeAddress == 0) {
@@ -532,10 +539,11 @@ int ssfs_fopen(char * name) {
 		and then return that entry index */
 		int fd = nextFreeFTB();
 
-		//printf("NEW NODE #%i, FILE AT INDEX #%i\n", newNode->indirect, fd);			//TESTER
-
+		//Copy newNode to FDT
 		xFileDescriptorTable -> openFiles[fd] = *newNode;
-		xFileDescriptorTable -> readPointers[fd] = 0;
+		
+		//Set read/write pointers
+		xFileDescriptorTable -> readPointers[fd] = 0;		
 		xFileDescriptorTable -> writePointers[fd] = 0;
 
 
@@ -570,6 +578,7 @@ int ssfs_fclose(int fileID) {
 	/* Found our file!
 	replace it with an empty iNode */
 	else {
+	
 		inode* shellNode = malloc(sizeof(inode));
 		shellNode->indirect = 0;
 		xFileDescriptorTable -> openFiles[inodeLocation] = *shellNode;
@@ -657,14 +666,20 @@ int ssfs_fwseek(int fileID, int loc) {
 //Write buf characters into disk
 int ssfs_fwrite(int fileID, char* buf, int length) {
 
+	int debugID = fileID;			//Solves some weird memory corruption bug
 	int blockSize = BLOCK_SIZE;
 	int maxNodes = INODE_POINTERS;
+
+	//Convert input to char array
+	unsigned char xBuf[length+1];
+	strcpy(xBuf, buf);
 
 	//Is this an open file?
 	if (findOpenFile(fileID) == -1) {
 		printf("No such file\n");
 		return -1;
 	}
+
 	
 	//Declare buffers
 	char pageBuf[blockSize];
@@ -700,7 +715,6 @@ int ssfs_fwrite(int fileID, char* buf, int length) {
 	//Does this write require designating a first new block?
 	if (cacheNode->direct[startingNode] == 0) {
 		cacheNode->direct[startingNode] = findNextFreeBlock(xFreeBitMap, 1);
-		printf("\n\nInode #%i, with direct[0] pointing to %i\n", cacheNode->indirect, cacheNode->direct[0]);
 	}
 	
 	/* Preform our writing at each block.
@@ -716,38 +730,42 @@ int ssfs_fwrite(int fileID, char* buf, int length) {
 	
 		//Read page into buffer
 		read_blocks(cacheNode->direct[tmpNode], 1, pageBuf);
-	
+		
 		//Write to buffer
-		memcpy(&pageBuf[startingByte], &buf[0], (remainingInputLength % blockSize)); 
+		memcpy(&pageBuf[(startingByte%1024)], &xBuf[inputAddr], (remainingInputLength % blockSize)); 
 
 		//Adjust Write Pointer
-		xFileDescriptorTable->writePointers[fileID] += (remainingInputLength % blockSize);
+		xFileDescriptorTable->writePointers[debugID] += (remainingInputLength % blockSize);
 
 		//Adjust RemainingInputLength
 		remainingInputLength -= (blockSize - startingByte);
+
+		//Adjust inputAddr
+		inputAddr =  inputAddr + (blockSize - startingByte);
 		
 		//Write buffer into page
 		write_blocks(cacheNode->direct[tmpNode], 1, pageBuf);
 		
-
 		//Allocate next block, if unallocatated
 		tmpNode++;
-		if (cacheNode->direct[tmpNode] == 0)
+		if (cacheNode->direct[tmpNode] == 0) 
 			cacheNode->direct[tmpNode] = findNextFreeBlock(xFreeBitMap, 1);
-
-		//Onto the next theoretical block
-		remainingInputLength -= blockSize;
 
 		//Set startingByte to 0
 		startingByte = 0;
+
+		//Clear memory page
+		memset(&pageBuf[0], 0, sizeof(pageBuf));
 	}
 
+	//Error check
+	cacheNode->indirect = debugID;					//TESTER
 
 	//Store Altered Inode in FDT
 	for (int i = 1; i < limit; i++) {							
 
 		//Is it the correct file?
-		if (xFileDescriptorTable->openFiles[i].indirect == fileID) {
+		if (xFileDescriptorTable->openFiles[i].indirect == debugID) {
 			
 			/* Deep Copy Inode at index,
 			references prior defined helper method,
@@ -759,68 +777,31 @@ int ssfs_fwrite(int fileID, char* buf, int length) {
 		}
 	}
 	
-	/*Store Altered Inode to Disk,
-	this is the same code I used for 'fopen',
-	but isn't well encapsulated in a 
-	helper method outside the scope of these
-	two larger functions */
-	inode* scanNode = malloc(sizeof(inode));
+
+	/* Store Altered Inode to Disk */
 	int pageLimit = 16;
 	void *inodeBuf[1024];
 	int blockIndex, pageIndex;
 
-	//Scan through xRoot pages for our inode
-	for (blockIndex = 0; blockIndex < 14; blockIndex++) {
-	
-		//Page invalid, break
-		if (xRoot->direct[blockIndex] == 0)
-			break;
+	//Get location of inode
+	int directPointer = (debugID / 16);
+	int writeAddress = ((debugID % 16) * 64);
 
-		//Gets inode page into buffer
-		read_blocks(xRoot->direct[blockIndex], 1, inodeBuf);
+	//Cache Root Inode Page
+	read_blocks(xRoot->direct[directPointer], 1, inodeBuf);
 
-		//Read each inode from block into buffer
-		for (pageIndex = 0; pageIndex < pageLimit; pageIndex++) {
-
-			//Read stored name into buffer
-			memcpy(&scanNode, &inodeBuf[pageIndex * sizeof(inode)], sizeof(scanNode));		
-			
-//TESTER
-printf("At index %i, ScanNode id: %i, direct[0]: %i\n", pageIndex, scanNode->indirect, scanNode->direct[0]);
-
-			//Found our inode?
-			if (scanNode->indirect == fileID) {
-
-	
-//TESTER
-printf("Replacing with id = %i and direct[0] = %i\n\n\n", cacheNode->indirect, cacheNode->direct[0]);
+	//Memcpy new inode into buffer
+	memcpy(&inodeBuf[writeAddress], &cacheNode , sizeof(cacheNode));
 
 
-				//Replace it with our updated version
-				memcpy(inodeBuf + (pageIndex * sizeof(inode)), &cacheNode, sizeof(inode));
-				//memcpy(&inodeBuf[pageIndex * sizeof(inode)], &cacheNode, sizeof(inode));
-				
-				//Overwrite disk section
-				write_blocks(xRoot->direct[blockIndex], 1, inodeBuf);
-			
-				
 
-				
-//TESTER
-printf("At index %i, new ScanNode id: %i, direct[0]: %i\n", pageIndex, scanNode->indirect, scanNode->direct[0]);
 
-				//Break
-				pageIndex+=1024;
-				blockIndex+=1024;
-				
-			} 
-		}	
-	}		
+
+	//Write updated block to disk
+	write_blocks(xRoot->direct[directPointer], 1, inodeBuf);
+
 	//Free cacheNode
-	free(cacheNode);
-
-	//Free scanNode
-	free(scanNode);
+	free(cacheNode); 
 
 	return length;
 }
@@ -846,7 +827,6 @@ int ssfs_fread(int fileID, char* buf, int length) {
 	//Declare buffers
 	char pageBuf[blockSize];
 	char masterBuf[blockSize * maxNodes];
-	//int addr = 0;
 
 	//Find readPointer
 	int readPointer = xFileDescriptorTable->readPointers[fileID];
@@ -875,8 +855,6 @@ int ssfs_fread(int fileID, char* buf, int length) {
 		}
 	}
 
-	printf("Inode #%i, directPointer[0] to block #%i\n", cacheNode->indirect, cacheNode->direct[0]);
-
 	/* Preform our reading at each block.
 	Will stop if we are requesting to
 	read input that isn't there */
@@ -885,7 +863,6 @@ int ssfs_fread(int fileID, char* buf, int length) {
 	int remainingInputLength = length;
 	int bufIndex = 0;
 	while(remainingInputLength >= 0 && tmpNode < 14) {
-	
 			
 		//Read page into buffer
 		read_blocks(cacheNode->direct[tmpNode], 1, pageBuf);
@@ -897,23 +874,26 @@ int ssfs_fread(int fileID, char* buf, int length) {
 		xFileDescriptorTable->readPointers[fileID] += (remainingInputLength % blockSize);
 
 
-
 		//Adjust RemainingInputLength
 		remainingInputLength -= (blockSize - startingByte);
 		
 		//Onto the next theoretical block
-		remainingInputLength -= blockSize;
+		tmpNode++;
 	
 		//Increment Buf Index
 		bufIndex += (blockSize - startingByte);
 
 		//Set startingByte to 0
 		startingByte = 0;
+
+		printf("REMAINING INPUT LENGTH: %i\n\n", remainingInputLength);
 	}
 
-	printf("masterBuf contents: %s\n", &masterBuf[0]);
+	printf("masterBuf contents: %s\n\n\n", &masterBuf[0]);
 
+	//malloc(strlen(buf)*sizeof(char));			//UPDATE
 	strcpy(buf, masterBuf);
+	
 
 	//Free cacheNode
 	free(cacheNode);
@@ -1115,6 +1095,7 @@ int ssfs_commit() {
 int ssfs_restore(int cnum) {
 	
 	//cnum is a previous shadow root index
+	return 0;
 
 }
 
